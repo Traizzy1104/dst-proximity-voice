@@ -33,4 +33,4 @@ client_only_mod = true
 all_clients_require_mod = false
 
 icon_atlas = ""
-icon = "preview.png"
+icon = ""
