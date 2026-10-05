@@ -1,0 +1,79 @@
+name: Build All-in-One Launcher Executables
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build Windows Executable
+        run: |
+          pyinstaller --onefile --noconsole --name "DST-Voice-Launcher-Windows" launcher.py
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DST-Voice-Launcher-Windows
+          path: dist/DST-Voice-Launcher-Windows.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build Linux Executable
+        run: |
+          pyinstaller --onefile --noconsole --name "DST-Voice-Launcher-Linux" launcher.py
+          chmod +x dist/DST-Voice-Launcher-Linux
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DST-Voice-Launcher-Linux
+          path: dist/DST-Voice-Launcher-Linux
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DST-Voice-Launcher-Windows
+          path: release/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: DST-Voice-Launcher-Linux
+          path: release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/DST-Voice-Launcher-Windows.exe
+            release/DST-Voice-Launcher-Linux
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
