@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-DST -> Mumble Link Positional Audio Bridge
-Autor: Robin & Antigravity
-Kompatibel mit: Linux (Ubuntu/Debian) & Windows 10/11
+Don't Starve Together -> Mumble Link Positional Audio Bridge
+Funktioniert nativ auf Linux (Ubuntu/Debian) und Windows.
+Unterstützt Spielfigur-Position & Kamera-Drehung (Q/E).
 """
 
 import os
@@ -42,8 +42,6 @@ class MumbleLink:
         self._init_shared_memory()
         self._init_static_fields()
 
-        # Startet einen Hintergrund-Ticker (10 Hz), damit Mumble die Verbindung
-        # auch dann aufrechterhält, wenn der Spieler minutenlang regungslos steht.
         self.ticker_thread = threading.Thread(target=self._keepalive_ticker, daemon=True)
         self.ticker_thread.start()
 
@@ -58,26 +56,19 @@ class MumbleLink:
             handle = kernel32.CreateFileMappingW(
                 wintypes.HANDLE(-1), None, PAGE_READWRITE, 0, size, "MumbleLink"
             )
-            if not handle:
-                raise OSError(f"Konnte MumbleLink FileMapping auf Windows nicht erstellen. Error: {kernel32.GetLastError()}")
             ptr = kernel32.MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size)
-            if not ptr:
-                raise OSError(f"MapViewOfFile fehlgeschlagen. Error: {kernel32.GetLastError()}")
             self.mem = LinkedMem.from_address(ptr)
         else:
-            # Linux: POSIX Shared Memory
             import mmap
             uid = os.getuid()
             size = ctypes.sizeof(LinkedMem)
             
-            # Hauptpfad für Linux Mumble: /dev/shm/MumbleLink.<uid>
             self.shm_path = f"/dev/shm/MumbleLink.{uid}"
             self.shm_file = open(self.shm_path, "w+b")
             self.shm_file.truncate(size)
             self.mm = mmap.mmap(self.shm_file.fileno(), size)
             self.mem = LinkedMem.from_buffer(self.mm)
 
-            # Fallback-Symlink auf /dev/shm/MumbleLink (manche ältere Mumble-Versionen)
             try:
                 fallback_path = "/dev/shm/MumbleLink"
                 if not os.path.exists(fallback_path):
@@ -91,36 +82,21 @@ class MumbleLink:
             self.mem.name = "Don't Starve Together"
             self.mem.description = "DST Proximity Voice Bridge"
             
-            # Fester Kontext: Alle Spieler in DST teilen sich diesen Kontext.
-            # Nur Spieler mit gleichem Kontext hören sich in Mumble räumlich!
             ctx = b"DST_PROXIMITY_WORLD"
             self.mem.context_len = len(ctx)
             for i, b in enumerate(ctx):
                 self.mem.context[i] = b
 
-            # Oben-Vektor (Y zeigt nach oben)
-            self.mem.fAvatarTop[0] = 0.0
-            self.mem.fAvatarTop[1] = 1.0
-            self.mem.fAvatarTop[2] = 0.0
-            self.mem.fCameraTop[0] = 0.0
-            self.mem.fCameraTop[1] = 1.0
-            self.mem.fCameraTop[2] = 0.0
+            self.mem.fAvatarTop[0], self.mem.fAvatarTop[1], self.mem.fAvatarTop[2] = 0.0, 1.0, 0.0
+            self.mem.fCameraTop[0], self.mem.fCameraTop[1], self.mem.fCameraTop[2] = 0.0, 1.0, 0.0
+            self.mem.fAvatarFront[0], self.mem.fAvatarFront[1], self.mem.fAvatarFront[2] = 0.0, 0.0, 1.0
+            self.mem.fCameraFront[0], self.mem.fCameraFront[1], self.mem.fCameraFront[2] = 0.0, 0.0, 1.0
 
-            # Standard-Blickrichtung (nach vorne)
-            self.mem.fAvatarFront[0] = 0.0
-            self.mem.fAvatarFront[1] = 0.0
-            self.mem.fAvatarFront[2] = 1.0
-            self.mem.fCameraFront[0] = 0.0
-            self.mem.fCameraFront[1] = 0.0
-            self.mem.fCameraFront[2] = 1.0
-
-    def update_position(self, x, y, z, rotation_deg):
+    def update_position(self, x, y, z, avatar_rot_deg, cam_heading_deg):
         with self.lock:
             self.tick += 1
             self.mem.uiTick = self.tick
 
-            # Mumble-Koordinatensystem:
-            # X = Rechts, Y = Oben, Z = Vorne (in Metern)
             self.mem.fAvatarPosition[0] = float(x)
             self.mem.fAvatarPosition[1] = float(y)
             self.mem.fAvatarPosition[2] = float(z)
@@ -129,21 +105,17 @@ class MumbleLink:
             self.mem.fCameraPosition[1] = float(y)
             self.mem.fCameraPosition[2] = float(z)
 
-            # Blickrichtung berechnen
-            rad = math.radians(rotation_deg)
-            front_x = -math.sin(rad)
-            front_z = math.cos(rad)
+            # Avatar Ausrichtung
+            ar_rad = math.radians(avatar_rot_deg)
+            afx, afz = -math.sin(ar_rad), math.cos(ar_rad)
+            self.mem.fAvatarFront[0], self.mem.fAvatarFront[1], self.mem.fAvatarFront[2] = afx, 0.0, afz
 
-            self.mem.fAvatarFront[0] = front_x
-            self.mem.fAvatarFront[1] = 0.0
-            self.mem.fAvatarFront[2] = front_z
-
-            self.mem.fCameraFront[0] = front_x
-            self.mem.fCameraFront[1] = 0.0
-            self.mem.fCameraFront[2] = front_z
+            # Kamera Ausrichtung (reagiert auf Q / E)
+            cam_rad = math.radians(cam_heading_deg)
+            cfx, cfz = -math.cos(cam_rad), -math.sin(cam_rad)
+            self.mem.fCameraFront[0], self.mem.fCameraFront[1], self.mem.fCameraFront[2] = cfx, 0.0, cfz
 
     def _keepalive_ticker(self):
-        """Erhöht uiTick periodisch, damit Mumble die Verbindung aktiv hält."""
         while self.running:
             with self.lock:
                 self.tick += 1
@@ -152,28 +124,16 @@ class MumbleLink:
 
     def close(self):
         self.running = False
-        if not self.is_windows and hasattr(self, "mm"):
-            try:
-                self.mm.close()
-                self.shm_file.close()
-                if os.path.exists(self.shm_path):
-                    os.unlink(self.shm_path)
-            except Exception:
-                pass
 
 
 # --- 2. Automatische Pfadsuche nach client_log.txt ---
 def find_log_file():
     home = Path.home()
-    
     candidates = [
-        # Linux Nativ
         home / ".klei/DoNotStarveTogether/client_log.txt",
-        # Windows Standard & OneDrive
         home / "Documents/Klei/DoNotStarveTogether/client_log.txt",
         home / "OneDrive/Documents/Klei/DoNotStarveTogether/client_log.txt",
         home / "OneDrive/Dokumente/Klei/DoNotStarveTogether/client_log.txt",
-        # Linux via Steam Proton / Steam Deck
         home / ".steam/steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether/client_log.txt",
         home / ".local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether/client_log.txt",
     ]
@@ -182,7 +142,6 @@ def find_log_file():
         if p.exists():
             return p
 
-    # Falls client_log.txt in einem Unterordner (z.B. mit Steam-ID) liegt:
     klei_dir = home / ".klei/DoNotStarveTogether"
     if klei_dir.exists():
         found = list(klei_dir.glob("**/client_log.txt"))
@@ -196,46 +155,36 @@ def find_log_file():
 def main():
     print("==================================================")
     print("   Don't Starve Together - Proximity Voice Bridge")
-    print("   Verbindung zu Mumble Link")
+    print("   Mit Kamera-Rotation (Q/E) & Mumble Link")
     print("==================================================")
 
     try:
         link = MumbleLink()
-        print("[OK] Mumble-Link Shared Memory erfolgreich initialisiert.")
+        print("[OK] Mumble-Link Shared Memory initialisiert.")
     except Exception as e:
-        print(f"[FEHLER] Konnte Mumble-Link nicht starten: {e}")
-        input("Drücke ENTER zum Beenden...")
+        print(f"[FEHLER] Mumble-Link Fehler: {e}")
         return
 
-    print("\nSuche nach Don't Starve Together Logdatei...")
     log_path = None
-    dots = 0
     while log_path is None:
         log_path = find_log_file()
         if not log_path:
-            dots = (dots + 1) % 4
-            print(f"\rWarte auf Spielstart (client_log.txt wird gesucht){'.' * dots}   ", end="", flush=True)
             time.sleep(1.5)
 
-    print(f"\n[OK] Logdatei gefunden:\n    -> {log_path}")
-    print("\nBridge ist aktiv! Sobald du einer Welt beitrittst, werden 3D-Daten übertragen.")
-    print("(Dieses Fenster während des Spielens einfach im Hintergrund offen lassen)\n")
+    print(f"[OK] Logdatei gefunden: {log_path}\n")
 
-    last_pos_str = ""
+    last_status = ""
     try:
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            # An das aktuelle Ende der Datei springen
             f.seek(0, 2)
             last_size = os.path.getsize(log_path)
 
             while True:
-                # Prüfe, ob DST neu gestartet wurde (Dateigröße schrumpft)
                 try:
-                    current_size = os.path.getsize(log_path)
-                    if current_size < last_size:
-                        print("\n[INFO] Spiel wurde neu gestartet. Setze Lesezeiger zurück...")
+                    cur_size = os.path.getsize(log_path)
+                    if cur_size < last_size:
                         f.seek(0, 0)
-                    last_size = current_size
+                    last_size = cur_size
                 except Exception:
                     pass
 
@@ -246,34 +195,33 @@ def main():
 
                 if "[MUMBLE_LINK]" in line:
                     try:
-                        # Format: [MUMBLE_LINK] POS:10.50,0.00,25.30 ROT:180.00 GHOST:false
                         parts = line.strip().split()
-                        pos_str = ""
-                        rot_str = "0"
+                        pos_str, rot_str, cam_str = "", "0", "0"
 
                         for part in parts:
                             if part.startswith("POS:"):
                                 pos_str = part[4:]
                             elif part.startswith("ROT:"):
                                 rot_str = part[4:]
+                            elif part.startswith("CAM:"):
+                                cam_str = part[4:]
 
                         if pos_str:
                             coords = [float(c) for c in pos_str.split(",")]
                             rot = float(rot_str)
-                            link.update_position(coords[0], coords[1], coords[2], rot)
+                            cam = float(cam_str)
+                            link.update_position(coords[0], coords[1], coords[2], rot, cam)
 
-                            status = f"\r[AKTIV] Position: X={coords[0]:.1f}, Z={coords[2]:.1f}, Blickrichtung={rot:.0f}°  "
-                            if status != last_pos_str:
+                            status = f"\r[AKTIV] Pos: X={coords[0]:.1f}, Z={coords[2]:.1f} | Kamera={cam:.0f}° | Wilson={rot:.0f}°  "
+                            if status != last_status:
                                 print(status, end="", flush=True)
-                                last_pos_str = status
+                                last_status = status
                     except Exception:
                         pass
-
     except KeyboardInterrupt:
-        print("\n\nBeende Bridge...")
+        print("\nBeende Bridge...")
     finally:
         link.close()
-        print("Auf Wiedersehen!")
 
 if __name__ == "__main__":
     main()

@@ -96,17 +96,23 @@ class MumbleLinkManager:
             self.mem.fAvatarFront[0], self.mem.fAvatarFront[1], self.mem.fAvatarFront[2] = 0.0, 0.0, 1.0
             self.mem.fCameraFront[0], self.mem.fCameraFront[1], self.mem.fCameraFront[2] = 0.0, 0.0, 1.0
 
-    def update(self, x, y, z, rotation_deg):
+    def update(self, x, y, z, avatar_rot_deg, cam_heading_deg):
         with self.lock:
             self.tick += 1
             self.mem.uiTick = self.tick
             self.mem.fAvatarPosition[0], self.mem.fAvatarPosition[1], self.mem.fAvatarPosition[2] = float(x), float(y), float(z)
             self.mem.fCameraPosition[0], self.mem.fCameraPosition[1], self.mem.fCameraPosition[2] = float(x), float(y), float(z)
 
-            rad = math.radians(rotation_deg)
-            fx, fz = -math.sin(rad), math.cos(rad)
-            self.mem.fAvatarFront[0], self.mem.fAvatarFront[1], self.mem.fAvatarFront[2] = fx, 0.0, fz
-            self.mem.fCameraFront[0], self.mem.fCameraFront[1], self.mem.fCameraFront[2] = fx, 0.0, fz
+            # 1. Avatar-Blickrichtung (wohin die Spielfigur guckt/spricht)
+            ar_rad = math.radians(avatar_rot_deg)
+            afx, afz = -math.sin(ar_rad), math.cos(ar_rad)
+            self.mem.fAvatarFront[0], self.mem.fAvatarFront[1], self.mem.fAvatarFront[2] = afx, 0.0, afz
+
+            # 2. Kamera-Blickrichtung (wohin der Bildschirm/die Ohren des Spielers gucken)
+            cam_rad = math.radians(cam_heading_deg)
+            cfx = -math.cos(cam_rad)
+            cfz = -math.sin(cam_rad)
+            self.mem.fCameraFront[0], self.mem.fCameraFront[1], self.mem.fCameraFront[2] = cfx, 0.0, cfz
 
     def _keepalive_loop(self):
         while self.running:
@@ -160,12 +166,10 @@ def auto_detect_dst_log():
     return ""
 
 def auto_configure_mumble():
-    """Richtet Mumble automatisch optimal für Proximity Chat ein."""
     is_windows = sys.platform.startswith("win")
     results = []
 
     if not is_windows:
-        # 1. liblink.so in Mumble Plugins-Ordner kopieren
         system_liblink = Path("/usr/lib/x86_64-linux-gnu/mumble/plugins/liblink.so")
         target_dir = Path.home() / ".local/share/Mumble/Mumble/Plugins"
         if system_liblink.exists():
@@ -177,7 +181,6 @@ def auto_configure_mumble():
             else:
                 results.append("Plugin liblink.so bereits vorhanden")
 
-        # 2. mumble_settings.json anpassen
         settings_path = Path.home() / ".config/Mumble/Mumble/mumble_settings.json"
         if settings_path.exists():
             try:
@@ -212,7 +215,7 @@ def auto_configure_mumble():
     return results
 
 
-# --- 4. CLI Modus (Fallback, falls Tkinter nicht installiert ist) ---
+# --- 4. CLI Modus ---
 def run_cli():
     cfg = load_config()
     log_path = cfg.get("custom_log_path") or auto_detect_dst_log()
@@ -304,19 +307,22 @@ def run_bridge_cli(log_path):
                 if "[MUMBLE_LINK]" in line:
                     try:
                         parts = line.strip().split()
-                        pos_str, rot_str = "", "0"
+                        pos_str, rot_str, cam_str = "", "0", "0"
                         for p in parts:
                             if p.startswith("POS:"):
                                 pos_str = p[4:]
                             elif p.startswith("ROT:"):
                                 rot_str = p[4:]
+                            elif p.startswith("CAM:"):
+                                cam_str = p[4:]
 
                         if pos_str:
                             coords = [float(c) for c in pos_str.split(",")]
                             rot = float(rot_str)
-                            link.update(coords[0], coords[1], coords[2], rot)
+                            cam = float(cam_str)
+                            link.update(coords[0], coords[1], coords[2], rot, cam)
 
-                            status = f"\r[VERBUNDEN] Position: X={coords[0]:.1f}, Z={coords[2]:.1f} | Blickrichtung={rot:.0f}°  "
+                            status = f"\r[VERBUNDEN] Pos: X={coords[0]:.1f}, Z={coords[2]:.1f} | Kamera={cam:.0f}° | Wilson={rot:.0f}°  "
                             if status != last_status:
                                 print(status, end="", flush=True)
                                 last_status = status
@@ -505,19 +511,22 @@ if HAS_TKINTER:
                     if "[MUMBLE_LINK]" in line:
                         try:
                             parts = line.strip().split()
-                            pos_str, rot_str = "", "0"
+                            pos_str, rot_str, cam_str = "", "0", "0"
                             for p in parts:
                                 if p.startswith("POS:"):
                                     pos_str = p[4:]
                                 elif p.startswith("ROT:"):
                                     rot_str = p[4:]
+                                elif p.startswith("CAM:"):
+                                    cam_str = p[4:]
 
                             if pos_str:
                                 coords = [float(c) for c in pos_str.split(",")]
                                 rot = float(rot_str)
-                                self.link_manager.update(coords[0], coords[1], coords[2], rot)
+                                cam = float(cam_str)
+                                self.link_manager.update(coords[0], coords[1], coords[2], rot, cam)
 
-                                status_text = f"[VERBUNDEN] Position: X={coords[0]:.1f}, Z={coords[2]:.1f} | Blickrichtung={rot:.0f}°"
+                                status_text = f"[VERBUNDEN] Pos: X={coords[0]:.1f}, Z={coords[2]:.1f} | Kamera={cam:.0f}° | Wilson={rot:.0f}°"
                                 self.after(0, lambda st=status_text: self.lbl_live_status.config(text=st, foreground="#06d6a0"))
                         except Exception:
                             pass
