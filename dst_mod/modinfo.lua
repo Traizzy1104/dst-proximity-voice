@@ -22,7 +22,7 @@ Open Source & Setup Guide:
 https://github.com/Traizzy1104/dst-proximity-voice
 ]]
 author = "Robin"
-version = "1.0.0"
+version = "1.1.0"
 
 forumthread = ""
 api_version = 10
